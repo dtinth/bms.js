@@ -6,9 +6,11 @@ var bms = {}
 
 // Parse BMS data from string.
 bms.parse = function(str) {
+
   var lines = str.split(/\n/)
     .map(function(x) { return x.replace(/^\s+|\s+$/g, '') })
     .filter(function(x) { return x.match(/^#/) })
+
   var headers = {}
     , events = []
     , measureSizes = {}
@@ -21,6 +23,7 @@ bms.parse = function(str) {
   lines.forEach(function(line) {
     var match
     if ((match = line.match(/^#(\d\d\d)(\d\d):(.+)/))) {
+      // event line, queue it for later processing
       var measureNumber = parseInt(match[1], 10)
       var channelNumber = parseInt(match[2], 10)
       eventLinesToParse.push({
@@ -29,18 +32,22 @@ bms.parse = function(str) {
       , content: match[3]
       })
     } else if ((match = line.match(/^#wav(..)\s+(.+)$/i))) {
+      // keysound definition -- add it
       keysounds[match[1].toUpperCase()] = match[2]
     } else if ((match = line.match(/^#bpm(..)\s+(.+)$/i))) {
+      // bpm definition -- remember it
       var bpm = parseFloat(match[2])
       if (isNaN(bpm)) {
         throw new Error('invalid bpm : ' + match[2])
       }
       bpms[match[1].toUpperCase()] = bpm
     } else if ((match = line.match(/^#(\w+)\s+(.+)$/))) {
+      // header line -- add it
       headers[match[1].toLowerCase()] = match[2]
     }
   })
 
+  // now parse each event lines
   eventLinesToParse.forEach(function(line) {
     parseEvent(line.measure, line.channel, line.content)
   })
@@ -56,24 +63,31 @@ bms.parse = function(str) {
       return
     }
     if (channel == 1) {
+      // auto keysound -- adjust its channel (> 100)
       channel = autoKeysoundChannels[measure]
         = (autoKeysoundChannels[measure] || 100) + 1
     }
+
+    // loop through each object
     var count = Math.floor(content.length / 2)
     for (var i = 0; i < count; i ++) {
+
       var text = content.substr(i * 2, 2)
         , position = i / count
       if (text != '00') {
         var obj = { measure: measure, position: position }
         if (channel == 3) {
+          // bpm (hex)
           obj.channel = 8
           obj.value = parseInt(text, 16)
           if (isNaN(obj.value)) throw new Error('invalid bpm: ' + text)
         } else if (channel == 8) {
+          // bpm (ref)
           obj.channel = 8
           obj.value = bpms[text.toUpperCase()]
           if (!obj.value) throw new Error('invalid bpmref: ' + text)
         } else {
+          // other
           obj.channel = channel
           obj.value = text.toUpperCase()
         }
@@ -88,36 +102,51 @@ bms.parse = function(str) {
   , measureSizes: measureSizes
   , keysounds: keysounds
   }
+
 }
 
+// utility: find gcd using euclidean method
 function gcd(a, b) {
   if (b > a) return gcd(b, a)
   if (b === 0) return a
   return gcd(b, a % b)
 }
 
+// stringify the bms object from parse
 function stringify(bms) {
   var lines = []
     , k
+
+  // pad with zero (3 digits)
   function pad(x) {
     var d = '000' + x
     return d.substr(d.length - 3)
   }
+
+  // pad with zero (2 digits)
   function two(x) {
     var d = '00' + x
     return d.substr(d.length - 2)
   }
+
+  // add headers
   for (k in bms.headers) {
     lines.push('#' + String(k).toUpperCase() + ' ' + bms.headers[k])
   }
+
+  // add keysounds
   for (k in bms.keysounds) {
     lines.push('#WAV' + String(k).toUpperCase() + ' ' + bms.keysounds[k])
   }
+
+  // add measure sizes
   for (k in bms.measureSizes) {
     if (Number(bms.measureSizes[k]) !== 1) {
       lines.push('#' + pad(k) + '02:' + bms.measureSizes[k])
     }
   }
+
+  // now we build bpm definitions
   var bpms = {}
     , nextBpm = 1
   function allocBpm(bpm) {
@@ -125,11 +154,15 @@ function stringify(bms) {
     lines.push('#BPM' + id + ' ' + bpm)
     return id
   }
+
   var events = bms.events
         .map(function(event) {
+          // process bpm events, convert them to either hex or ref bpm
           if (event.channel != 8) return event
+
           if (Math.abs(event.value - Math.round(event.value)) < 1.0e-5) {
             if (event.value > 0 && event.value <= 255) {
+              // hex bpm
               return {
                 measure: event.measure
               , position: event.position
@@ -138,6 +171,8 @@ function stringify(bms) {
               }
             }
           }
+
+          // ref bpm
           var bpm = String(event.value)
             , id = bpms[bpm]
                 || (bpms[bpm] = allocBpm(bpm))
@@ -148,7 +183,12 @@ function stringify(bms) {
           , value: id
           }
         })
-    , eventsByMeasure = _(events).groupBy(function(event) {
+
+  // hold output lines, but for notes
+  var noteLines = []
+
+  // split events by measure
+  var eventsByMeasure = _(events).groupBy(function(event) {
         return event.measure
       })
     , eventMeasures = _(eventsByMeasure).chain()
@@ -156,10 +196,13 @@ function stringify(bms) {
         .map(Number)
         .sortBy(Number)
         .value()
-  var noteLines = []
+
+  // for each measure,
   eventMeasures.forEach(function(measureNumber) {
     var measureEvents = eventsByMeasure[measureNumber]
-      , byChannel = _(measureEvents).groupBy(function(event) {
+
+    // then split them by channel
+    var byChannel = _(measureEvents).groupBy(function(event) {
           return event.channel
         })
       , channels = _(byChannel).chain()
@@ -169,14 +212,21 @@ function stringify(bms) {
           .value()
       , measureCount = Math.round((bms.measureSizes[measureNumber] || 1) * 192)
     noteLines.push('')
+
+    // for each channel,
     var lastAK = 101
     channels.forEach(function(channelIndex) {
+
       var channelText = two(channelIndex + '')
       if (channelIndex > 100) channelText = '01'
+
+      // pad with blank autokeysound channel
       while (channelIndex > lastAK) {
         noteLines.push('#' + pad(measureNumber) + '01:00')
         lastAK++
       }
+
+      // build position map
       var map = {}
         , positions = []
       byChannel[channelIndex].forEach(function(event) {
@@ -184,6 +234,8 @@ function stringify(bms) {
         positions.push(intPosition)
         map[intPosition] = event
       })
+
+      // generate the actual bms data string
       var increment = positions.reduce(gcd, measureCount)
         , string = ''
       for (var i = 0; i < measureCount; i += increment) {
@@ -194,13 +246,18 @@ function stringify(bms) {
           string += '00'
         }
       }
+       
       noteLines.push('#' + pad(measureNumber) + channelText + ':' + string)
+
     })
   })
+
   return lines.concat(noteLines).join('\n')
+
 }
 bms.stringify = stringify
 
+// compute and return a stat object for bms.
 function stat(bms) {
   var object = {}
 
@@ -268,6 +325,7 @@ function stat(bms) {
 }
 bms.stat = stat
 
+// group notes by row (assume each event object has .row property)
 function byRow(notes) {
   var notesByRow = _(notes).chain()
         .sortBy(function(event) { return event.value })
@@ -279,9 +337,9 @@ function byRow(notes) {
   noteRows.sort(function(a, b) { return a - b; })
   return { rows: noteRows, map: notesByRow }
 }
-
 bms.byRow = byRow
 
+// checks if the event is a note event
 bms.isNote = function(event) {
   return 10 < event.channel && event.channel < 30
       || 50 < event.channel && event.channel < 70
